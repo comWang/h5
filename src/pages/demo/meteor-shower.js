@@ -1,20 +1,47 @@
-const config = {
-  width: 200,
-  height: 200,
-}
-
 // 获取宽高。初始宽高都是200，使用函数方便后续以此为基数计算其他宽高
 const w = num => window.innerWidth
 const h = num => window.innerHeight
-const setFillGradient = (ctx, ...colors) => {
-  const linearGradient = ctx.createLinearGradient(0, 0, 0, h(150))
-  colors.forEach(color => {
-    linearGradient.addColorStop(color[0], color[1])
-  })
-  ctx.fillStyle = linearGradient
+const clear = ctx => ctx.clearRect(0, 0, w(200), h(200))
+const arrayToRGBA = arr => {
+  return (
+    'rgba(' +
+    arr
+      .slice(0, 3)
+      .concat(Math.round((arr[3] / 255) * 1 * 100) / 100)
+      .join(',') +
+    ')'
+  )
 }
 
-const clear = ctx => ctx.clearRect(0, 0, w(200), h(200))
+const Curve = {
+  /**
+   *
+   * @param {number} t 运动至当前状态的持续时间(ms)
+   * @param {number} b 初始值
+   * @param {number} c 变化量
+   * @param {number} d 总的运动时间
+   */
+  Linear(t, b, c, d) {
+    return (c * t) / d + b
+  },
+  Quad: {
+    // 二次方缓动效果
+    easeIn: function(t, b, c, d) {
+      return c * (t /= d) * t + b
+    },
+    easeOut: function(t, b, c, d) {
+      return -c * (t /= d) * (t - 2) + b
+    },
+    easeInOut: function(t, b, c, d) {
+      if ((t /= d / 2) < 1) return (c / 2) * t * t + b
+      return (-c / 2) * (--t * (t - 2) - 1) + b
+    },
+  },
+  Linear2(t, b, c, d = 20) {
+    const time = t / d
+    return b + c * time
+  },
+}
 
 class Meteor {
   // 初始位置
@@ -88,18 +115,31 @@ class Meteor {
 
 class Star {
   // 初始位置
-  constructor(fn, options = {}) {
-    if (fn instanceof Function) this.positionFn = fn
+  constructor(ctx, fn, options) {
+    if (fn instanceof Function) this.statusFn = fn
+    this.ctx = ctx
     // 周期运动的次数，传递给相关函数（从1开始）
-    this.loopCount = 0
-    const [offsetX, offsetY] = options.offset || [0, 0]
-    const [x, y, r = 1] = this.positionFn(++this.loopCount)
+    this.loopCount = 1
+    this.options = Object.assign({}, options)
+    this.init()
+  }
+
+  init() {
+    const [x, y, r = 1] = this.statusFn(this.loopCount, this.options)
+    this.loopCount++
     this.x = x
     this.y = y
     this.r = r
+    // 闪烁间隔时间
+    this.shine = Math.round(Math.random() * 1000 + 300)
+    this.lastShine = null
+    this.fillColor = null
   }
 
-  positionFn() {
+  /**
+   * @returns <x0: number, y0: number, r: number>
+   */
+  statusFn() {
     return [
       Math.round(Math.random() * w(200)),
       Math.round(Math.random() * h(200)),
@@ -107,47 +147,103 @@ class Star {
     ]
   }
 
-  draw(ctx) {
+  calcFillColor() {
+    const now = new Date()
+    // 控制闪烁最短间隔时间
+    if (this.lastShine && now - this.lastShine < this.shine) {
+      return
+    }
     const randomNum = Math.random()
-    ctx.fillStyle = randomNum < 0.6 ? '#888' : randomNum > 0.8 ? '#fff' : '#555'
+    this.fillColor = randomNum < 0.6 ? '#888' : randomNum > 0.8 ? '#fff' : '#555'
+    this.lastShine = now
+  }
+
+  draw() {
+    const { ctx } = this
+    ctx.save()
+    this.calcFillColor()
+    ctx.fillStyle = this.fillColor
     ctx.beginPath()
     ctx.arc(this.x, this.y, this.r, 0, Math.PI * 2, false)
     ctx.fill()
+    ctx.restore()
   }
 }
 
 class StarLight extends Star {
-  constructor(...rest) {
-    super(...rest)
-    this.resetSpeed()
+  constructor(...params) {
+    super(...params)
+    this.loopCount = 1
+    this.beforeAnimationTime = new Date()
+    this.lastFramePos = null
+    this.init()
   }
 
-  resetSpeed() {
-    this.vx = Math.round(Math.random() * 500) / 2000
-    this.vy = -Math.round(Math.random() * 500) / 2000
+  init() {
+    const [x, y, r = 1] = this.statusFn(this.loopCount, this.options)
+    this.loopCount++
+    this.x = x
+    this.y = y
+    this.r = r
+    this.currentLoopTime = null
+    this.setPhysicParameters()
+  }
+
+  setPhysicParameters() {
+    this.physicParameters = {
+      dx: Math.round(Math.random() * 3 + 1) / 2,
+      dy: -Math.round(Math.random() * 3 + 1) / 2,
+    }
   }
 
   calcShapeCoordinate() {
-    const x0 = this.x
-    const y0 = this.y
-    return [x0 + this.vx, y0 + this.vy]
+    const { dx, dy } = this.physicParameters
+    const continuousTime = 1000
+    const timeLine = new Date(this.beforeAnimationTime.getTime() + 10 * 1000)
+    const now = new Date()
+    if (now > timeLine) {
+      const [x0, y0] = this.lastFramePos
+      const { x: x1, y: y1 } = this.options
+      const x = Curve.Linear(
+        now - this.currentLoopTime,
+        x0,
+        (x1 - x0) / continuousTime,
+        continuousTime
+      )
+      const y = Curve.Linear(
+        now - this.currentLoopTime,
+        y0,
+        (y1 - y0) / continuousTime,
+        continuousTime
+      )
+      return [x, y]
+    }
+    if (!this.currentLoopTime) {
+      this.currentLoopTime = new Date()
+      return [this.x, this.y]
+    }
+    return [
+      Curve.Linear2(new Date() - this.currentLoopTime, this.x, dx),
+      Curve.Linear2(new Date() - this.currentLoopTime, this.y, dy),
+    ]
   }
 
-  draw(ctx) {
-    const randomNum = Math.random()
+  draw() {
+    const { ctx } = this
+    const { rgba } = this.options
     let [x, y] = this.calcShapeCoordinate()
-    if ((x > w(200) || x < 0) && (y > h(200) || y < 0)) {
-      this.resetSpeed()
-      const [x1, y1] = this.positionFn(++this.loopCount)
-      x = x1
-      y = y1
-    }
-    this.x = x
-    this.y = y
-    ctx.fillStyle = '#16c79a'
+    // if (x > w(200) || x < 0 || y > h(200) || y < 0) {
+    //   this.init()
+    //   x = this.x
+    //   y = this.y
+    // }
+    this.lastFramePos = [x, y]
+    ctx.save()
+    ctx.fillStyle = rgba || 'rgba(0,0,0,1)'
     ctx.beginPath()
-    ctx.arc(x, y, this.r, 0, Math.PI * 2, false)
+    ctx.arc(...this.lastFramePos, this.r, 0, Math.PI * 2, false)
     ctx.fill()
+    ctx.restore()
   }
 }
 
@@ -159,49 +255,74 @@ const paintBackground = ctx => {
   ctx.fillRect(0, 0, w(200), h(200))
 }
 
-const paintStars = ctx => {
-  const fn = loopCount => [
+const getPixelPointsFrom = (str = '😃Li') => {
+  const imgSize = [220, 100]
+  const imgPos = [w(220) / 2, h(200) / 2]
+  const canvasDOM = document.createElement('canvas')
+  canvasDOM.setAttribute('width', w(200))
+  canvasDOM.setAttribute('height', h(200))
+  const ctx = canvasDOM.getContext('2d')
+  ctx.strokeStyle = 'rgba(100,255,255,1)'
+  ctx.fillStyle = 'rgba(100,255,255,1)'
+  ctx.font = `800 ${imgSize[1]}px sans-serif`
+  ctx.fillText(str, imgPos[0], imgPos[1] + imgSize[1])
+  // ctx.fillRect(...imgPos, ...imgSize)
+  // ctx.strokeRect(...imgPos, ...imgSize)
+  const imgData = ctx.getImageData(...imgPos, ...imgSize)
+  const { data, width, height } = imgData
+  const pixels = []
+  const columns = 50
+  const rows = 50
+  const unitW = width / columns
+  const unitH = height / rows
+  for (let i = 0; i < rows; i++) {
+    for (let j = 0; j < columns; j++) {
+      const pixelOrder = Math.round(i * unitW * unitH * columns + j * unitW)
+      const redOrder = pixelOrder * 4
+      const rgba = arrayToRGBA([
+        data[redOrder],
+        data[redOrder + 1],
+        data[redOrder + 2],
+        data[redOrder + 3],
+      ])
+      pixels.push({
+        x: imgPos[0] + j * unitW,
+        y: imgPos[1] + i * unitH,
+        rgba,
+      })
+    }
+  }
+  return pixels
+}
+
+const paintStars = (ctx, img) => {
+  const fn = () => [
     Math.round(Math.random() * w(200)),
     Math.round(Math.random() * 300),
     Math.round(Math.random() * 15) / 10 + 0.3,
   ]
-  const stars = Array.apply(null, { length: 50 }).map(() => new Star(fn))
+  const fn2 = () => [
+    Math.round(Math.random() * w(200) * 0.6),
+    window.innerHeight * 0.4 + Math.round(Math.random() * window.innerHeight * 0.6),
+    Math.round(Math.random() * 200 + 50) / 100,
+  ]
+
+  const stars = Array.apply(null, { length: 50 }).map(() => new Star(ctx, fn))
+  const pixels = getPixelPointsFrom()
+  const starLight = pixels.map(pixel => new StarLight(ctx, fn2, pixel))
   const loopDraw = () => {
+    requestAnimationFrame(loopDraw)
     clear(ctx)
     paintBackground(ctx)
     stars.forEach(star => star.draw(ctx))
-    setTimeout(loopDraw, Math.round(Math.random() * 600 + 400))
+    starLight.forEach(light => light.draw(ctx))
   }
   loopDraw()
 }
 
-const paintMeteors = ctx => {
-  const fn = loopCount => [
-    Math.round(Math.random() * w(200)),
-    Math.round(Math.random() * 300),
-    Math.round(Math.random() * 10) + 1,
-  ]
-  const fn2 = loopCount => [
-    Math.round(Math.random() * window.innerWidth * 0.8),
-    window.innerHeight * 0.6 + Math.round(Math.random() * window.innerHeight * 0.4),
-    Math.round(Math.random() * 200 + 30) / 50,
-  ]
-  const meteors = Array.apply(null, { length: 3 }).map(() => new Meteor(fn))
-  // const starLight = Array.apply(null, { length: 200 }).map(() => new StarLight(fn2))
-  const loopDraw = () =>
-    requestAnimationFrame(() => {
-      clear(ctx)
-      meteors.forEach(meteor => meteor.draw(ctx))
-      // starLight.forEach(light => light.draw(ctx))
-      loopDraw()
-    })
-  loopDraw()
-}
-
 class MeteorShower {
-  constructor(dom, userConfig) {
+  constructor(dom) {
     if (!(dom instanceof Node)) throw new TypeError('Expect DOM element but got: ' + dom)
-    this.config = Object.assign({}, config, userConfig)
     this.isActive = false
 
     const canvas = document.createElement('canvas')
@@ -225,7 +346,7 @@ class MeteorShower {
     if (this.ctx === null) throw new Error('Cannot get paint context')
     this.isActive = true
     paintStars(this.backgroudContext)
-    paintMeteors(this.foregroundContext)
+    // paintMeteors(this.foregroundContext)
   }
 }
 
